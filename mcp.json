@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "azure-logs": {
+      "command": "python",
+      "args": ["server.py"],
+      "cwd": "/Users/fayah/Unified/azure-logs-mcp"
+    }
+  }
+}
