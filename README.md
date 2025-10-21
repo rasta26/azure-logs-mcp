@@ -42,23 +42,57 @@ npm start
 - Set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`
 - Fallback to DefaultAzureCredential if SPN not configured
 
-## MCP Configuration
+## VS Code + Copilot Setup
 
-Add to Q CLI config:
-```json
-{
-  "mcpServers": {
-    "azure-logs": {
-      "command": "docker",
-      "args": ["run", "-i", "--env-file", ".env", "azure-logs-mcp"]
-    }
-  }
-}
+1. **Install Extensions:**
+   - GitHub Copilot
+   - GitHub Copilot Chat
+
+2. **Set Environment Variables:**
+```bash
+export AZURE_CLIENT_ID="your-client-id"
+export AZURE_CLIENT_SECRET="your-client-secret"
+export AZURE_TENANT_ID="your-tenant-id"
 ```
 
-## Tools
+3. **Open Project in VS Code:**
+```bash
+code .
+```
 
-- `query_logs` - Execute KQL with formatting
-- `save_query` / `list_saved_queries` / `run_saved_query` - Query management  
-- `list_tables` - List workspace tables
-- `get_table_schema` - Get table schema
+4. **Use with Copilot:**
+   - Open Copilot Chat (Ctrl+Shift+I)
+   - MCP server will be available for Azure Log Analytics queries
+   - Example: "Query the Heartbeat table for the last hour"
+
+## Configuration Files
+
+- `.vscode/settings.json` - MCP server configuration
+- `.vscode/launch.json` - Debug configuration  
+- `mcp-config.json` - Standalone MCP configuration
+
+## Debugging & Troubleshooting
+
+**Enable Debug Mode:**
+```bash
+export DEBUG=true
+npm start
+```
+
+**Test Connectivity:**
+Use the `test_connectivity` tool to diagnose Azure connection issues:
+- Tests authentication
+- Validates workspace access
+- Reports detailed error information
+
+**Common Issues:**
+- **Authentication errors**: Check SPN credentials
+- **Workspace not found**: Verify workspace ID
+- **Network issues**: Check firewall/proxy settings
+- **Permission errors**: Ensure SPN has Log Analytics Reader role
+
+**Debug Output:**
+- Credential configuration details
+- Connection test results
+- Query execution timing
+- Detailed error messages with codes
