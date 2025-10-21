@@ -8,6 +8,37 @@ import { ClientSecretCredential, DefaultAzureCredential } from "@azure/identity"
 
 const DEBUG = process.env.DEBUG === 'true';
 
+const SECURITY_QUERIES = {
+  "failed_logins": {
+    "query": "SigninLogs | where ResultType != 0 | summarize count() by UserPrincipalName, ResultType | order by count_ desc",
+    "description": "Failed login attempts by user"
+  },
+  "privileged_operations": {
+    "query": "AuditLogs | where Category == 'RoleManagement' | project TimeGenerated, OperationName, InitiatedBy, TargetResources",
+    "description": "Privileged role management operations"
+  },
+  "suspicious_locations": {
+    "query": "SigninLogs | where RiskLevelDuringSignIn == 'high' | project TimeGenerated, UserPrincipalName, Location, IPAddress",
+    "description": "High-risk sign-ins from suspicious locations"
+  },
+  "data_access_audit": {
+    "query": "StorageBlobLogs | where OperationName == 'GetBlob' | summarize count() by AccountName, CallerIpAddress | order by count_ desc",
+    "description": "Data access patterns for blob storage"
+  },
+  "admin_activities": {
+    "query": "AzureActivity | where CategoryValue == 'Administrative' and ActivityStatusValue == 'Success' | project TimeGenerated, Caller, OperationNameValue, ResourceGroup",
+    "description": "Administrative activities in Azure"
+  },
+  "network_security": {
+    "query": "AzureNetworkAnalytics_CL | where FlowType_s == 'ExternalPublic' | summarize count() by SrcIP_s, DestPort_d | order by count_ desc",
+    "description": "External network connections"
+  },
+  "compliance_changes": {
+    "query": "AzureActivity | where OperationNameValue contains 'policy' | project TimeGenerated, Caller, OperationNameValue, Properties",
+    "description": "Policy and compliance related changes"
+  }
+};
+
 function debugLog(message, data = null) {
   if (DEBUG) {
     console.error(`[DEBUG] ${new Date().toISOString()} - ${message}`);
@@ -205,6 +236,36 @@ class AzureLogsMCPServer {
             },
             required: ["workspace_id", "table_name"]
           }
+        },
+        {
+          name: "list_security_queries",
+          description: "List available security query templates",
+          inputSchema: { type: "object", properties: {} }
+        },
+        {
+          name: "run_security_query",
+          description: "Execute a predefined security query",
+          inputSchema: {
+            type: "object",
+            properties: {
+              workspace_id: { type: "string", description: "Workspace ID (optional if DEFAULT_WORKSPACE_ID set)" },
+              query_name: { type: "string", description: "Security query name" },
+              timespan: { type: "string", description: "Time range", default: "PT24H" },
+              format: { type: "string", enum: ["json", "csv", "table"], default: "json" }
+            },
+            required: ["query_name"]
+          }
+        },
+        {
+          name: "get_security_query",
+          description: "Get details of a specific security query",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query_name: { type: "string", description: "Security query name" }
+            },
+            required: ["query_name"]
+          }
         }
       ]
     }));
@@ -233,6 +294,12 @@ class AzureLogsMCPServer {
             return await this.listTables(args);
           case "get_table_schema":
             return await this.getTableSchema(args);
+          case "list_security_queries":
+            return this.listSecurityQueries();
+          case "run_security_query":
+            return await this.runSecurityQuery(args);
+          case "get_security_query":
+            return this.getSecurityQuery(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -373,6 +440,43 @@ class AzureLogsMCPServer {
     );
     
     return { content: [{ type: "text", text: JSON.stringify({ table: table_name, schema }, null, 2) }] };
+  }
+
+  listSecurityQueries() {
+    const queries = Object.entries(SECURITY_QUERIES).map(([name, data]) => ({
+      name,
+      description: data.description
+    }));
+    
+    return { content: [{ type: "text", text: JSON.stringify(queries, null, 2) }] };
+  }
+
+  getSecurityQuery({ query_name }) {
+    const query = SECURITY_QUERIES[query_name];
+    
+    if (!query) {
+      return { content: [{ type: "text", text: `Security query '${query_name}' not found` }] };
+    }
+    
+    return { content: [{ type: "text", text: JSON.stringify({ name: query_name, ...query }, null, 2) }] };
+  }
+
+  async runSecurityQuery({ workspace_id, query_name, timespan = "PT24H", format = "json" }) {
+    const securityQuery = SECURITY_QUERIES[query_name];
+    
+    if (!securityQuery) {
+      throw new Error(`Security query '${query_name}' not found`);
+    }
+    
+    debugLog("Running security query", { query_name, timespan, format });
+    
+    return await this.queryLogs({
+      workspace_id,
+      query: securityQuery.query,
+      timespan,
+      format,
+      limit: 1000
+    });
   }
 
   async run() {
