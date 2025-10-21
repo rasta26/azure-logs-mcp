@@ -96,3 +96,23 @@ Use the `test_connectivity` tool to diagnose Azure connection issues:
 - Connection test results
 - Query execution timing
 - Detailed error messages with codes
+
+## Security Queries
+
+**Available Templates:**
+- `failed_logins` - Failed login attempts by user
+- `privileged_operations` - Role management operations  
+- `suspicious_locations` - High-risk sign-ins
+- `data_access_audit` - Blob storage access patterns
+- `admin_activities` - Administrative activities
+- `network_security` - External network connections
+- `compliance_changes` - Policy and compliance changes
+
+**Usage:**
+```bash
+# List all security queries
+list_security_queries
+
+# Run a specific security query
+run_security_query --query_name failed_logins --timespan PT1H
+```
