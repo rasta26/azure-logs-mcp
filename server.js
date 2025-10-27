@@ -3,7 +3,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { LogsQueryClient } from "@azure/monitor-query";
+import { LogsQueryClient } from "@azure/monitor-query-logs";
 import { ClientSecretCredential, DefaultAzureCredential } from "@azure/identity";
 
 const DEBUG = process.env.DEBUG === 'true';
@@ -36,6 +36,18 @@ const SECURITY_QUERIES = {
   "compliance_changes": {
     "query": "AzureActivity | where OperationNameValue contains 'policy' | project TimeGenerated, Caller, OperationNameValue, Properties",
     "description": "Policy and compliance related changes"
+  },
+  "security_alerts": {
+    "query": "SecurityAlert | project TimeGenerated, AlertName, AlertSeverity, Description, Entities",
+    "description": "Security Center alerts"
+  },
+  "security_incidents": {
+    "query": "SecurityIncident | project TimeGenerated, Title, Severity, Status, Owner",
+    "description": "Security incidents from Sentinel"
+  },
+  "malware_detections": {
+    "query": "SecurityEvent | where EventID == 1116 | project TimeGenerated, Computer, ThreatName = extract('Threat name: ([^\\r\\n]+)', 1, EventData)",
+    "description": "Windows Defender malware detections"
   }
 };
 
@@ -107,7 +119,7 @@ class AzureLogsMCPServer {
         if (this.defaultWorkspaceId) {
           debugLog("Testing connectivity to default workspace", { workspaceId: this.defaultWorkspaceId });
           try {
-            await this.logsClient.queryWorkspace(this.defaultWorkspaceId, "print 'connectivity test'", { duration: "PT1M" });
+            await this.logsClient.queryLogs(this.defaultWorkspaceId, "print 'connectivity test'", { duration: "PT1M" });
             debugLog("Connectivity test successful");
           } catch (testError) {
             errorLog("Connectivity test failed", testError);
@@ -266,6 +278,45 @@ class AzureLogsMCPServer {
             },
             required: ["query_name"]
           }
+        },
+        {
+          name: "query_security_logs",
+          description: "Query Azure Security Center and security-related logs",
+          inputSchema: {
+            type: "object",
+            properties: {
+              workspace_id: { type: "string", description: "Workspace ID (optional if DEFAULT_WORKSPACE_ID set)" },
+              query: { type: "string", description: "KQL query for security logs" },
+              timespan: { type: "string", description: "Time range", default: "PT24H" },
+              format: { type: "string", enum: ["json", "csv", "table"], default: "json" }
+            },
+            required: ["query"]
+          }
+        },
+        {
+          name: "query_logs_batch",
+          description: "Execute multiple KQL queries in batch",
+          inputSchema: {
+            type: "object",
+            properties: {
+              workspace_id: { type: "string", description: "Workspace ID (optional if DEFAULT_WORKSPACE_ID set)" },
+              queries: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", description: "Query identifier" },
+                    query: { type: "string", description: "KQL query" },
+                    timespan: { type: "string", description: "Time range", default: "PT1H" }
+                  },
+                  required: ["id", "query"]
+                },
+                description: "Array of queries to execute"
+              },
+              format: { type: "string", enum: ["json", "csv", "table"], default: "json" }
+            },
+            required: ["queries"]
+          }
         }
       ]
     }));
@@ -300,6 +351,10 @@ class AzureLogsMCPServer {
             return await this.runSecurityQuery(args);
           case "get_security_query":
             return this.getSecurityQuery(args);
+          case "query_security_logs":
+            return await this.querySecurityLogs(args);
+          case "query_logs_batch":
+            return await this.queryLogsBatch(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -326,7 +381,7 @@ class AzureLogsMCPServer {
 
     try {
       debugLog("Testing connectivity", { workspaceId: testWorkspaceId });
-      const response = await this.logsClient.queryWorkspace(testWorkspaceId, "print 'Connection successful'", { duration: "PT1M" });
+      const response = await this.logsClient.queryLogs(testWorkspaceId, "print 'Connection successful'", { duration: "PT1M" });
       
       const result = {
         status: "success",
@@ -363,7 +418,7 @@ class AzureLogsMCPServer {
     debugLog("Executing query", { workspaceId, query, timespan, format, limit });
     
     try {
-      const response = await this.logsClient.queryWorkspace(workspaceId, query, { duration: timespan });
+      const response = await this.logsClient.queryLogs(workspaceId, query, { duration: timespan });
       
       if (!response.tables?.length) {
         debugLog("Query returned no results");
@@ -421,7 +476,7 @@ class AzureLogsMCPServer {
 
   async listTables({ workspace_id }) {
     const query = "search * | distinct $table | sort by $table asc";
-    const response = await this.logsClient.queryWorkspace(workspace_id, query, { duration: "P30D" });
+    const response = await this.logsClient.queryLogs(workspace_id, query, { duration: "P30D" });
     
     const tables = response.tables?.[0]?.rows?.map(row => row[0]) || [];
     return { content: [{ type: "text", text: JSON.stringify({ tables }, null, 2) }] };
@@ -429,7 +484,7 @@ class AzureLogsMCPServer {
 
   async getTableSchema({ workspace_id, table_name }) {
     const query = `${table_name} | getschema | project ColumnName, DataType, ColumnType`;
-    const response = await this.logsClient.queryWorkspace(workspace_id, query, { duration: "P1D" });
+    const response = await this.logsClient.queryLogs(workspace_id, query, { duration: "P1D" });
     
     if (!response.tables?.[0]?.rows?.length) {
       return { content: [{ type: "text", text: `No schema found for ${table_name}` }] };
@@ -477,6 +532,66 @@ class AzureLogsMCPServer {
       format,
       limit: 1000
     });
+  }
+
+  async querySecurityLogs({ workspace_id, query, timespan = "PT24H", format = "json" }) {
+    const workspaceId = workspace_id || this.defaultWorkspaceId;
+    
+    if (!workspaceId) {
+      throw new Error("No workspace_id provided and DEFAULT_WORKSPACE_ID not set");
+    }
+    
+    debugLog("Executing security logs query", { workspaceId, query, timespan, format });
+    
+    // Add security-focused context to the query if not already present
+    const securityTables = ['SecurityEvent', 'SecurityAlert', 'SecurityIncident', 'SigninLogs', 'AuditLogs', 'AADNonInteractiveUserSignInLogs'];
+    const hasSecurityTable = securityTables.some(table => query.includes(table));
+    
+    if (!hasSecurityTable) {
+      debugLog("Query doesn't reference security tables, executing as-is");
+    }
+    
+    return await this.queryLogs({ workspace_id: workspaceId, query, timespan, format });
+  }
+
+  async queryLogsBatch({ workspace_id, queries, format = "json" }) {
+    const workspaceId = workspace_id || this.defaultWorkspaceId;
+    
+    if (!workspaceId) {
+      throw new Error("No workspace_id provided and DEFAULT_WORKSPACE_ID not set");
+    }
+    
+    debugLog("Executing batch queries", { workspaceId, queryCount: queries.length, format });
+    
+    const results = {};
+    
+    for (const queryItem of queries) {
+      try {
+        debugLog(`Executing batch query: ${queryItem.id}`);
+        const response = await this.logsClient.queryLogs(workspaceId, queryItem.query, { 
+          duration: queryItem.timespan || "PT1H" 
+        });
+        
+        if (response.tables?.length) {
+          const queryResults = [];
+          for (const table of response.tables) {
+            const rows = table.rows.map(row => 
+              Object.fromEntries(table.columns.map((col, i) => [col.name, row[i]]))
+            );
+            queryResults.push(...rows);
+          }
+          results[queryItem.id] = this.formatResults(queryResults, format, 1000);
+        } else {
+          results[queryItem.id] = "No results found";
+        }
+      } catch (error) {
+        errorLog(`Batch query ${queryItem.id} failed`, error);
+        results[queryItem.id] = `Error: ${error.message}`;
+      }
+    }
+    
+    debugLog("Batch queries completed", { resultCount: Object.keys(results).length });
+    return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
   }
 
   async run() {

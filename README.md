@@ -1,6 +1,6 @@
 # Azure Log Analytics MCP Server (Node.js)
 
-Node.js MCP server for Azure Log Analytics with Docker support and Service Principal authentication.
+Node.js MCP server for Azure Log Analytics with Docker support and Service Principal authentication. Uses the official `@azure/monitor-query-logs` library from the Azure SDK for JavaScript.
 
 ## Quick Start
 
@@ -107,6 +107,9 @@ Use the `test_connectivity` tool to diagnose Azure connection issues:
 - `admin_activities` - Administrative activities
 - `network_security` - External network connections
 - `compliance_changes` - Policy and compliance changes
+- `security_alerts` - Security Center alerts
+- `security_incidents` - Security incidents from Sentinel
+- `malware_detections` - Windows Defender malware detections
 
 **Usage:**
 ```bash
@@ -115,4 +118,25 @@ list_security_queries
 
 # Run a specific security query
 run_security_query --query_name failed_logins --timespan PT1H
+
+# Query security logs directly
+query_security_logs --query "SecurityAlert | take 10"
+
+# Batch query multiple security tables
+query_logs_batch --queries '[
+  {"id": "alerts", "query": "SecurityAlert | take 5"},
+  {"id": "incidents", "query": "SecurityIncident | take 5"}
+]'
 ```
+
+## New Features
+
+**Security Logs Querying:**
+- Dedicated `query_security_logs` tool for security-focused queries
+- Optimized for SecurityEvent, SecurityAlert, SecurityIncident, SigninLogs, AuditLogs tables
+- Enhanced security query templates
+
+**Batch Query Processing:**
+- `query_logs_batch` tool for executing multiple queries simultaneously
+- Parallel execution with individual error handling
+- Structured results with query identifiers
